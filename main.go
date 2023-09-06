@@ -85,58 +85,63 @@ func GetLastDowloadedDump() string {
 
 var downloadedSignalFile = filepath.Join(GetAssetDir(), "downloaded")
 
-func Start() {
-	if utils.FirstInstance() {
-		if !utils.Exists(downloadedSignalFile) {
-			lastDownload := GetLastDowloadedDump()
+func Start() bool {
 
-			link := ""
-			dumps := GetLibgenDumps()
+	if !utils.Exists(downloadedSignalFile) {
+		lastDownload := GetLastDowloadedDump()
 
-			if len(lastDownload) > 0 {
-				for _, dump := range dumps {
-					if strings.Contains(lastDownload, dump) {
-						link = dump
-						if !strings.HasSuffix(link, ".rar") {
-							link = utils.RemoveExt(link)
-						}
-						break
+		link := ""
+		dumps := GetLibgenDumps()
+
+		if len(lastDownload) > 0 {
+			for _, dump := range dumps {
+				if strings.Contains(lastDownload, dump) {
+					link = dump
+					if !strings.HasSuffix(link, ".rar") {
+						link = utils.RemoveExt(link)
 					}
+					break
 				}
 			}
-			if len(link) == 0 {
-				utils.DeleteAllFiles(GetAssetDir())
-				sort.Slice(dumps, func(i, j int) bool {
-					return dumps[i] > dumps[j]
-				})
-				rgx := regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
-				for _, dump := range dumps {
-					if rgx.MatchString(dump) {
-						link = dump
-						break
-					}
-				}
-			}
-
-			link = "https://data.library.bz/dbdumps/" + link
-			filename := ""
-			slashIdx := strings.LastIndex(link, "/")
-			filename = link[slashIdx+1:]
-			destFile := filepath.Join(GetAssetDir(), filename)
-
-			dl, err := downloader.Download(link, destFile)
-			if err != nil {
-				println(err)
-			}
-			if err == nil && dl.Size >= dl.Status.Downloaded {
-				utils.WriteFile(downloadedSignalFile, []byte(""))
-			}
-		} else {
-			time.Sleep(time.Second * 10)
 		}
-	}
+		if len(link) == 0 {
+			utils.DeleteAllFiles(GetAssetDir())
+			sort.Slice(dumps, func(i, j int) bool {
+				return dumps[i] > dumps[j]
+			})
+			rgx := regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
+			for _, dump := range dumps {
+				if rgx.MatchString(dump) {
+					link = dump
+					break
+				}
+			}
+		}
 
+		link = "https://data.library.bz/dbdumps/" + link
+		filename := ""
+		slashIdx := strings.LastIndex(link, "/")
+		filename = link[slashIdx+1:]
+		destFile := filepath.Join(GetAssetDir(), filename)
+
+		dl, err := downloader.Download(link, destFile)
+		if err != nil {
+			println(err)
+		}
+		if err == nil && dl.Size >= dl.Status.Downloaded {
+			utils.WriteFile(downloadedSignalFile, []byte(""))
+			return true
+		}
+
+	}
+	return false
 }
 func main() {
-	Start()
+	if utils.FirstInstance() {
+		for !Start() {
+			time.Sleep(time.Second * 10)
+		}
+	} else {
+		time.Sleep(time.Second * 10)
+	}
 }
