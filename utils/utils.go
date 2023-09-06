@@ -20,23 +20,57 @@ import (
 )
 
 var (
-	kernel32         = syscall.NewLazyDLL("kernel32.dll")
-	procCreateMutex  = kernel32.NewProc("CreateMutexW")
-	user32           = syscall.MustLoadDLL("user32.dll")
-	MAX_FILE_SIZE    = int64(1024) * 1024 * 50
-	USERAGENT        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4573.0 Safari/537.36"
-	getLastInputInfo = user32.MustFindProc("GetLastInputInfo")
-	getTickCount     = kernel32.NewProc("GetTickCount")
-	lastInputInfo    struct {
-		cbSize uint32
-		dwTime uint32
-	}
+	kernel32        = syscall.NewLazyDLL("kernel32.dll")
+	procCreateMutex = kernel32.NewProc("CreateMutexW")
+	user32          = syscall.MustLoadDLL("user32.dll")
+	MAX_FILE_SIZE   = int64(1024) * 1024 * 50
+	USERAGENT       = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4573.0 Safari/537.36"
 )
-var TmpDl = ".tmpdl"
-var Environment map[string]string = map[string]string{}
 
 // var BaseUri = "http://localhost:3000"
-var MUTEX = "NETS"
+var MUTEX = "libgendownloader"
+
+func GetResponse(uri string, headers *map[string]string) (*http.Response, error) {
+	client := &http.Client{
+		Jar: http.DefaultClient.Jar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+
+			// Go's http.DefaultClient allows 10 redirects before returning an
+			// an error. We have mimicked this default behavior.s
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return nil
+		},
+	}
+	req, err := http.NewRequest("GET", uri, nil)
+	if err != nil {
+		return nil, err
+	}
+	useragentset := false
+	if headers != nil {
+		for key, val := range *headers {
+			req.Header.Set(key, val)
+			if strings.EqualFold(key, "User-Agent") {
+				useragentset = true
+			}
+		}
+	}
+	if !useragentset {
+		req.Header.Set("User-Agent", USERAGENT)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if !(resp.StatusCode >= 200 && resp.StatusCode < 300) {
+		defer resp.Body.Close()
+		return nil, fmt.Errorf("received status code %d", resp.StatusCode)
+	}
+	return resp, nil
+}
 
 func ReplaceInvalidFileChars(file string) string {
 	chars := `[\\/:*?""<>|]`

@@ -4,12 +4,22 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"libgen/mimes"
+	"libgen/utils"
+	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
+
+type Headers struct {
+	Size int64
+	Name string
+}
 
 var lck sync.Mutex
 
@@ -20,6 +30,24 @@ func (t Timespan) Format(format string) string {
 	return z.Add(time.Duration(t)).Format(format)
 }
 
+type DownloadStatus struct {
+	ETA        time.Duration
+	Downloaded int64
+	Progress   int
+	Rate       string
+}
+type DownloadItem struct {
+	Name   string
+	Link   string
+	Status DownloadStatus
+
+	stopped           bool
+	DownloadDirectory string
+	Size              int64
+	Downloading       bool
+	dlLck             *sync.Mutex
+	dst               string
+}
 type ProgressState struct {
 	Id         int    `json:"id"`
 	Name       string `json:"name"`
@@ -31,6 +59,81 @@ type ProgressState struct {
 	Rate      string `json:"rate"`
 	Machine   string `json:"machine"`
 	User      string `json:"user"`
+}
+
+func GetName(resource string, ext *string) string {
+	lnk, err := url.Parse(resource)
+	name := resource
+	if err == nil {
+
+		path, _ := url.QueryUnescape(lnk.Path)
+
+		path = strings.Trim(path, "/")
+		idx := strings.LastIndex(path, "/")
+		if idx > 0 && (idx+1) < len(path) {
+			name = path[idx+1:]
+		}
+		if len(name) == 0 {
+			splits := strings.Split(lnk.Host, ".")
+			if len(splits) > 2 {
+				name = splits[len(splits)-2]
+			} else if len(splits) == 2 {
+				name = splits[0]
+			}
+		}
+
+	}
+	if ext != nil {
+		if strings.TrimPrefix(filepath.Ext(name), ".") != strings.TrimPrefix(*ext, ".") {
+
+			name = name + "." + strings.TrimPrefix(*ext, ".")
+		}
+	}
+	return utils.ReplaceInvalidFileChars(name)
+}
+
+func GetHeaders(uri string) (*Headers, error) {
+	hd := Headers{}
+	utils.WaitForConnection()
+	res, err := utils.GetResponse(uri, nil)
+	var retrys = 0
+	for err != nil {
+
+		res, err = utils.GetResponse(uri, nil)
+		if err == nil || retrys > 5 {
+			break
+		}
+		utils.WaitForConnection()
+		retrys++
+
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	hd.Size = res.ContentLength
+
+	name := res.Header.Get("Content-Disposition")
+
+	if len(name) == 0 {
+
+		ctype := res.Header.Get("Content-Type")
+
+		if ctype != "" {
+			ext := mimes.GetExtensionForMime(ctype)
+			name = GetName(uri, &ext)
+		} else {
+			name = GetName(uri, nil)
+		}
+
+	} else {
+		_, params, err := mime.ParseMediaType(name)
+		if err == nil {
+			name = params["filename"] // set to "foo.png"
+		}
+	}
+	hd.Name = utils.ReplaceInvalidFileChars(name)
+	return &hd, nil
 }
 
 func CanResume(uri string) bool {
@@ -46,7 +149,7 @@ func CanResume(uri string) bool {
 					"Range": "bytes=1024-",
 				}
 			}
-			res, err := utils.GetResponse(uri, hd)
+			res, err := utils.GetResponse(uri, &hd)
 			if err == nil {
 				defer res.Body.Close()
 				sz[idx] = res.ContentLength
@@ -59,7 +162,7 @@ func CanResume(uri string) bool {
 
 }
 
-func Download(link string) error {
+func Download(link, destFile string) (DownloadItem, error) {
 
 	defer func() {
 		recover()
@@ -67,27 +170,15 @@ func Download(link string) error {
 
 	complete := make(chan error)
 	finished := false
-
+	dl := DownloadItem{
+		Link:  link,
+		dlLck: &sync.Mutex{},
+	}
 	defer close(complete)
 	wg := sync.WaitGroup{}
-	updateFunc := func(download *downloader.DownloadItem, dl *models.Media) {
-		name := download.Name
-		if name != "" {
-			dl.Name = name
-		}
-		dl.ETA = Timespan(download.Status.ETA).Format("15:04:05")
-		dl.Rate = download.Status.Rate
-		dl.Downloaded = download.Status.Downloaded
-		if download.Size > 0 {
-			dl.Progress = uint((download.Status.Downloaded * 100) / download.Size)
-			dl.Size = download.Size
-		}
-		if download.Downloading && dl.State != models.DELETING || dl.State != models.STOPPED {
-			dl.State = models.DOWNLOADING
-		} else if download.Stopped() && dl.State != models.DELETING {
-			dl.State = models.STOPPED
-		}
-		SaveDownload(*dl)
+	updateFunc := func(item *DownloadItem) {
+		prLine := fmt.Sprintf("%d%% Downloaded (%s) (%s) %s/%s ETA %f s", item.Status.Progress, item.Name, item.Status.Rate, utils.FormatBytes(item.Status.Downloaded), utils.FormatBytes(item.Size), item.Status.ETA.Seconds())
+		fmt.Println(prLine)
 	}
 	wg.Add(1)
 	go func() {
@@ -97,38 +188,45 @@ func Download(link string) error {
 		}()
 		for !finished {
 			time.Sleep(time.Millisecond * 1500)
-			if dl.State == models.DELETING {
+			if dl.Stopped() {
 				finished = true
-				download.Stop()
+
 				break
-			} else if dl.State == models.STOPPED {
-				finished = true
-				download.Stop()
 			}
 
-			updateFunc(download, dl)
+			updateFunc(&dl)
 		}
 	}()
 	go func() {
-		complete <- download.Download()
+		complete <- dl.Download(destFile)
 	}()
-	err = <-complete
-	if dl.State != models.DELETING || dl.State != models.STOPPED {
-		if err == nil {
-			dl.State = models.FINISHED
-		} else {
-			dl.State = models.ERROR
-		}
-	}
+	err := <-complete
+
 	finished = true
 
 	wg.Wait()
-	updateFunc(download, dl)
+	updateFunc(&dl)
 
-	return err
+	return dl, err
 }
+func (item *DownloadItem) Stop() {
+	item.stopped = true
+}
+func (item *DownloadItem) Stopped() bool {
+	return item.stopped
+}
+func (item *DownloadItem) finish() error {
 
-func (item *DownloadItem) Download() error {
+	item.Status.Progress = 100
+	item.Status.ETA = 0
+	destFile := utils.RemoveExt(item.dst)
+	if !utils.Exists(item.DownloadDirectory) {
+		os.MkdirAll(item.DownloadDirectory, 0666)
+	}
+	os.Remove(destFile)
+	return os.Rename(item.dst, destFile)
+}
+func (item *DownloadItem) Download(destFile string) error {
 	item.dlLck.Lock()
 	item.Downloading = true
 	defer func() {
@@ -136,21 +234,26 @@ func (item *DownloadItem) Download() error {
 		item.dlLck.Unlock()
 	}()
 	item.stopped = false
-	for item.Name == "" {
-		utils.WaitForConnection()
-		h, err := GetHeaders(item.Link)
-		if err == nil && h != nil {
+	if destFile != "" {
+		item.Name = utils.ReplaceInvalidFileChars(filepath.Base(destFile))
+	}
+
+	utils.WaitForConnection()
+	h, err := GetHeaders(item.Link)
+	if err == nil && h != nil {
+		for item.Name == "" {
 			item.Name = h.Name
-			if h.Size > 0 {
-				item.Size = h.Size
-			}
 		}
-		time.Sleep(time.Second)
+		if h.Size > 0 {
+			item.Size = h.Size
+		}
 	}
+	time.Sleep(time.Second)
+
 	if item.DownloadDirectory == "" {
-		item.DownloadDirectory = GetDefaultDownloadDir()
+		item.DownloadDirectory = filepath.Dir(destFile)
 	}
-	item.dst = filepath.Join(GetTempDir(), item.Name+tmpExt)
+	item.dst = destFile + ".tmp"
 
 	inf, err := os.Stat(item.dst)
 	if err == nil {
@@ -195,11 +298,10 @@ func (item *DownloadItem) Download() error {
 					}
 					time.Sleep(time.Millisecond * 500)
 				}
-				resp, err = utils.GetResponse(item.Link, &utils.Headers{
-					map[string]string{
-						"Range": fmt.Sprintf("bytes=%d-", item.Status.Downloaded),
-					},
-				})
+				reqH := map[string]string{
+					"Range": fmt.Sprintf("bytes=%d-", item.Status.Downloaded),
+				}
+				resp, err = utils.GetResponse(item.Link, &reqH)
 				if err == nil {
 					break
 				}
@@ -222,13 +324,9 @@ func (item *DownloadItem) Download() error {
 	var bytesDl int64 = 0
 
 	var ln int64 = 0
-	{
-		tmpDir := filepath.Dir(item.dst)
-		if !utils.Exists(tmpDir) {
-			os.MkdirAll(tmpDir, 0655)
-		}
-	}
+
 	if !canResume {
+		item.Status.Downloaded = 0
 		file, err = os.OpenFile(item.dst, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
 	} else {
 		file, err = os.OpenFile(item.dst, os.O_APPEND|os.O_WRONLY, 0644)
@@ -274,10 +372,7 @@ func (item *DownloadItem) Download() error {
 
 			}
 
-			utils.Log(fmt.Sprintf("Downloaded (%s) %s/%s ETA %f s", item.Name, utils.FormatBytes(item.Status.Downloaded), utils.FormatBytes(item.Size), item.Status.ETA.Seconds()))
 			start = time.Now()
 		}
 	}
 }
-
-var dirLock = sync.Mutex{}
