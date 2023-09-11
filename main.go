@@ -67,7 +67,7 @@ func GetLibgenDumps() []string {
 }
 func GetLastDowloadedDump() string {
 	downloaded := ""
-	rgx := regexp.MustCompile(`(-part-\d+.tmp)$`)
+	rgx := regexp.MustCompile(`((-part-\d+.tmp)$)|((-part-\d+.rar)$)`)
 	dir := GetAssetDir()
 	infos, err := os.ReadDir(dir)
 	if err == nil {
@@ -85,7 +85,7 @@ func GetLastDowloadedDump() string {
 		sort.Slice(paths, func(i, j int) bool {
 			return paths[i] > paths[j]
 		})
-		rgx := regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
+		rgx = regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
 		for _, dl := range paths {
 			if rgx.MatchString(dl) {
 				downloaded = dl
@@ -107,7 +107,7 @@ func GetDumpToDownload() (string, int64) {
 
 	if len(lastDownload) > 0 {
 		for _, dump := range dumps {
-			if strings.Contains(lastDownload, dump) {
+			if strings.Contains(dump, lastDownload) {
 				link = dump
 				if !strings.HasSuffix(link, ".rar") {
 					link = utils.RemoveExt(link)
@@ -188,8 +188,8 @@ func DownloadPart(destFile, link string, index int, start, size int64) error {
 			}
 			file.Close()
 			if err == nil {
-				utils.MoveOrCopyFile(tempFile, targetFile)
-				return nil
+				return utils.MoveOrCopyFile(tempFile, targetFile)
+
 			}
 		}
 		time.Sleep(time.Second)
@@ -210,10 +210,10 @@ func Start() bool {
 
 			parts := SplitFileParts(size, partSize)
 
-			{
-				err := DownloadPart(destFile, link, 265, 2048*10, 1024*1024*5)
-				fmt.Println(err)
-			}
+			// {
+			// 	err := DownloadPart(destFile, link, 265, 2048*10, 1024*1024*5)
+			// 	fmt.Println(err)
+			// }
 
 			for len(parts) > 0 {
 				wg := sync.WaitGroup{}
