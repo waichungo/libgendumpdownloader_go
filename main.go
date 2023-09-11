@@ -67,14 +67,18 @@ func GetLibgenDumps() []string {
 }
 func GetLastDowloadedDump() string {
 	downloaded := ""
-
+	rgx := regexp.MustCompile(`(-part-\d+.tmp)$`)
 	dir := GetAssetDir()
 	infos, err := os.ReadDir(dir)
 	if err == nil {
 		paths := make([]string, 0, 20)
 		for _, info := range infos {
 			if !info.IsDir() && (strings.HasSuffix(info.Name(), ".tmp") || strings.HasSuffix(info.Name(), ".rar")) {
-				paths = append(paths, info.Name())
+				name := info.Name()
+				if rgx.MatchString(name) {
+					name = rgx.ReplaceAllString(name, "")
+				}
+				paths = append(paths, name)
 			}
 
 		}
@@ -148,36 +152,41 @@ func DownloadPart(destFile, link string, index int, start, size int64) error {
 		os.Remove(targetFile)
 	}
 	var err error = nil
-	for index := 0; index < 5; index++ {
+	for trys := 0; trys < 5; trys++ {
 		res, err := utils.GetResponse(link, &map[string]string{
-			"Range": fmt.Sprintf("bytes=%d-%d", size),
+			"Range": fmt.Sprintf("bytes=%d-%d", start, size),
 		})
 		if err == nil {
 			defer res.Body.Close()
-		}
-		file, err := os.OpenFile(targetFile, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
-		defer file.Close()
-		rem := size
-		ln := int64(0)
-		for {
-			ln, err = io.CopyN(file, res.Body, 1024*20)
 
-			if err == io.EOF {
-				err = nil
-				file.Close()
-				if utils.GetFileSize(targetFile) != size {
-					err = errors.New("file size does not match")
-				}
-				break
-			}
+			file, err := os.OpenFile(tempFile, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
 			if err != nil {
-				file.Close()
-				break
+				return err
 			}
-			rem -= ln
-		}
-		if err == nil {
-			return nil
+			defer file.Close()
+			rem := size
+			ln := int64(0)
+			for rem > 0 {
+				ln, err = io.CopyN(file, res.Body, 1024*20)
+
+				if err == io.EOF {
+					err = nil
+					file.Close()
+					if utils.GetFileSize(targetFile) != size {
+						err = errors.New("file size does not match")
+					}
+					break
+				}
+				if err != nil {
+					file.Close()
+					break
+				}
+				rem -= ln
+			}
+			if err == nil {
+				utils.MoveOrCopyFile(targetFile, tempFile)
+				return nil
+			}
 		}
 		time.Sleep(time.Second)
 		utils.WaitForConnection()
@@ -197,15 +206,32 @@ func Start() bool {
 
 			parts := SplitFileParts(size, partSize)
 
+			{
+				DownloadPart(destFile, link, 265, 2048*10, 1024*1024*5)
+			}
+
 			for len(parts) > 0 {
 				wg := sync.WaitGroup{}
+				downloading := 0
 
-				for idx, sz := range parts {
+				for idx, p := range parts {
 					wg.Add(1)
-					go func(index int, size int64) {
-						err := DownloadPart(destFile, link, index)
+					downloading++
+					go func(index int, part Part) {
+						defer func() {
+							downloading--
+							wg.Done()
 
-					}(idx, sz)
+						}()
+						err := DownloadPart(destFile, link, index, part.Start, part.Size)
+						if err == nil {
+							delete(parts, index)
+						}
+
+					}(idx, p)
+					for downloading > 4 {
+						time.Sleep(time.Second * 2)
+					}
 				}
 				wg.Wait()
 
@@ -216,16 +242,25 @@ func Start() bool {
 	}
 	return false
 }
-func SplitFileParts(totalSize int64, partSize int) map[int]int64 {
-	var res = map[int]int64{}
+func SplitFileParts(totalSize int64, partSize int) map[int]Part {
+	var res = map[int]Part{}
 	rem := totalSize
 	index := 0
+	startIdx := int64(0)
 	for rem > 0 {
 		if rem > int64(partSize) {
-			res[index] = int64(partSize)
+			res[index] = Part{
+				Start: int64(startIdx),
+				Size:  int64(partSize),
+			}
 			rem -= int64(partSize)
+			startIdx += int64(partSize)
 		} else {
-			res[index] = rem
+			res[index] = Part{
+				Start: int64(startIdx),
+				Size:  int64(partSize),
+			}
+			startIdx += rem
 			rem -= rem
 		}
 		index++
