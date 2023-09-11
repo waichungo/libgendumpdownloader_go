@@ -1,7 +1,6 @@
 package main
 
 import (
-	"libgen/downloader"
 	"libgen/utils"
 	"net/http"
 	"os"
@@ -117,20 +116,14 @@ func Start() bool {
 				}
 			}
 		}
+		if len(link) > 0 {
 
-		link = "https://data.library.bz/dbdumps/" + link
-		filename := ""
-		slashIdx := strings.LastIndex(link, "/")
-		filename = link[slashIdx+1:]
-		destFile := filepath.Join(GetAssetDir(), filename)
+			link = "https://data.library.bz/dbdumps/" + link
+			filename := ""
+			slashIdx := strings.LastIndex(link, "/")
+			filename = link[slashIdx+1:]
+			destFile := filepath.Join(GetAssetDir(), filename)
 
-		dl, err := downloader.Download(link, destFile)
-		if err != nil {
-			println(err)
-		}
-		if err == nil && dl.Size >= dl.Status.Downloaded {
-			utils.WriteFile(downloadedSignalFile, []byte(""))
-			return true
 		}
 
 	}
