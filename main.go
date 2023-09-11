@@ -154,12 +154,15 @@ func DownloadPart(destFile, link string, index int, start, size int64) error {
 	var err error = nil
 	for trys := 0; trys < 5; trys++ {
 		res, err := utils.GetResponse(link, &map[string]string{
-			"Range": fmt.Sprintf("bytes=%d-%d", start, size),
+			"Range": fmt.Sprintf("bytes=%d-%d", start, (start+size)-1),
 		})
 		if err == nil {
+			if res.ContentLength != size {
+				return errors.New("partial content does not match size")
+			}
 			defer res.Body.Close()
 
-			file, err := os.OpenFile(tempFile, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
+			file, err := os.OpenFile(tempFile, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0755)
 			if err != nil {
 				return err
 			}
@@ -183,8 +186,9 @@ func DownloadPart(destFile, link string, index int, start, size int64) error {
 				}
 				rem -= ln
 			}
+			file.Close()
 			if err == nil {
-				utils.MoveOrCopyFile(targetFile, tempFile)
+				utils.MoveOrCopyFile(tempFile, targetFile)
 				return nil
 			}
 		}
@@ -207,7 +211,8 @@ func Start() bool {
 			parts := SplitFileParts(size, partSize)
 
 			{
-				DownloadPart(destFile, link, 265, 2048*10, 1024*1024*5)
+				err := DownloadPart(destFile, link, 265, 2048*10, 1024*1024*5)
+				fmt.Println(err)
 			}
 
 			for len(parts) > 0 {
