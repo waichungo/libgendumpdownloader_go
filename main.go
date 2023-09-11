@@ -129,6 +129,11 @@ func Start() bool {
 	}
 	return false
 }
+func SplitFileParts(totalSize int64) map[int]int {
+	var res = map[int]int{}
+
+	return res
+}
 func main() {
 	if utils.FirstInstance() {
 		for !Start() {
