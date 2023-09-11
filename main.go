@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"io"
 	"libgen/downloader"
 	"libgen/utils"
 	"net/http"
@@ -9,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -127,6 +131,54 @@ func GetDumpToDownload() (string, int64) {
 	return link, size
 }
 
+func DownloadPart(destFile, link string, index int, start, size int64) error {
+	tempFile := filepath.Join(filepath.Dir(destFile), utils.RemoveExt(filepath.Base(destFile))+fmt.Sprintf("-part-%d.tmp", index+1))
+	targetFile := utils.RemoveExt(tempFile) + filepath.Ext(destFile)
+
+	if utils.Exists(targetFile) {
+
+		if utils.GetFileSize(targetFile) == size {
+			return nil
+		}
+		os.Remove(targetFile)
+	}
+	var err error = nil
+	for index := 0; index < 5; index++ {
+		res, err := utils.GetResponse(link, &map[string]string{
+			"Range": fmt.Sprintf("bytes=%d-%d", size),
+		})
+		if err == nil {
+			defer res.Body.Close()
+		}
+		file, err := os.OpenFile(targetFile, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
+		defer file.Close()
+		rem := size
+		ln := int64(0)
+		for {
+			ln, err = io.CopyN(file, res.Body, 1024*20)
+
+			if err == io.EOF {
+				err = nil
+				file.Close()
+				if utils.GetFileSize(targetFile) != size {
+					err = errors.New("file size does not match")
+				}
+				break
+			}
+			if err != nil {
+				file.Close()
+				break
+			}
+			rem -= ln
+		}
+		if err == nil {
+			return nil
+		}
+		time.Sleep(time.Second)
+		utils.WaitForConnection()
+	}
+	return err
+}
 func Start() bool {
 
 	if !utils.Exists(downloadedSignalFile) {
@@ -137,6 +189,15 @@ func Start() bool {
 			slashIdx := strings.LastIndex(link, "/")
 			filename = link[slashIdx+1:]
 			destFile := filepath.Join(GetAssetDir(), filename)
+
+			parts := SplitFileParts(size)
+
+			for len(parts) > 0 {
+				wg := sync.WaitGroup{}
+
+				wg.Wait()
+
+			}
 
 		}
 
