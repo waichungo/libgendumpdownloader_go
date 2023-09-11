@@ -18,6 +18,11 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
+type Part struct {
+	Start int64
+	Size  int64
+}
+
 func GetAssetDir() string {
 	dir := filepath.Join(utils.GetBaseDirectory(), "asset")
 	if !utils.Exists(dir) {
@@ -184,17 +189,24 @@ func Start() bool {
 	if !utils.Exists(downloadedSignalFile) {
 		link, size := GetDumpToDownload()
 		if size > 0 {
-
+			const partSize = 1024 * 1024 * 20
 			filename := ""
 			slashIdx := strings.LastIndex(link, "/")
 			filename = link[slashIdx+1:]
 			destFile := filepath.Join(GetAssetDir(), filename)
 
-			parts := SplitFileParts(size)
+			parts := SplitFileParts(size, partSize)
 
 			for len(parts) > 0 {
 				wg := sync.WaitGroup{}
 
+				for idx, sz := range parts {
+					wg.Add(1)
+					go func(index int, size int64) {
+						err := DownloadPart(destFile, link, index)
+
+					}(idx, sz)
+				}
 				wg.Wait()
 
 			}
@@ -204,8 +216,20 @@ func Start() bool {
 	}
 	return false
 }
-func SplitFileParts(totalSize int64) map[int]int {
-	var res = map[int]int{}
+func SplitFileParts(totalSize int64, partSize int) map[int]int64 {
+	var res = map[int]int64{}
+	rem := totalSize
+	index := 0
+	for rem > 0 {
+		if rem > int64(partSize) {
+			res[index] = int64(partSize)
+			rem -= int64(partSize)
+		} else {
+			res[index] = rem
+			rem -= rem
+		}
+		index++
+	}
 
 	return res
 }
