@@ -96,7 +96,7 @@ func GetLastDowloadedDump() string {
 	return downloaded
 }
 
-var downloadedSignalFile = filepath.Join(GetAssetDir(), "downloaded")
+var downloadedSignalFile = filepath.Join(utils.GetBaseDirectory(), "downloaded")
 
 func GetDumpToDownload() (string, int64) {
 	lastDownload := GetLastDowloadedDump()
@@ -216,9 +216,11 @@ func Start() bool {
 			// }
 
 			for len(parts) > 0 {
+				total := len(parts)
+				fmt.Printf("Downloading %d parts\n", total)
 				wg := sync.WaitGroup{}
 				downloading := 0
-
+				counter := 0
 				for idx, p := range parts {
 					wg.Add(1)
 					downloading++
@@ -234,13 +236,20 @@ func Start() bool {
 						}
 
 					}(idx, p)
+					if (counter+1)%5 == 0 {
+						progress := int((counter * 100) / total)
+						fmt.Printf("At position %d/%d %d%%\n", counter+1, total, progress)
+					}
 					for downloading > 4 {
 						time.Sleep(time.Second * 2)
 					}
+
+					counter++
 				}
 				wg.Wait()
-
+				time.Sleep(time.Second * 2)
 			}
+			return true
 
 		}
 
