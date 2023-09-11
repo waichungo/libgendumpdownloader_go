@@ -1,6 +1,7 @@
 package main
 
 import (
+	"libgen/downloader"
 	"libgen/utils"
 	"net/http"
 	"os"
@@ -84,41 +85,54 @@ func GetLastDowloadedDump() string {
 
 var downloadedSignalFile = filepath.Join(GetAssetDir(), "downloaded")
 
+func GetDumpToDownload() (string, int64) {
+	lastDownload := GetLastDowloadedDump()
+
+	link := ""
+	dumps := GetLibgenDumps()
+	size := int64(0)
+
+	if len(lastDownload) > 0 {
+		for _, dump := range dumps {
+			if strings.Contains(lastDownload, dump) {
+				link = dump
+				if !strings.HasSuffix(link, ".rar") {
+					link = utils.RemoveExt(link)
+				}
+				break
+			}
+		}
+	}
+	if len(link) == 0 {
+		utils.DeleteAllFiles(GetAssetDir())
+		sort.Slice(dumps, func(i, j int) bool {
+			return dumps[i] > dumps[j]
+		})
+		rgx := regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
+		for _, dump := range dumps {
+			if rgx.MatchString(dump) {
+				link = dump
+				break
+			}
+		}
+	}
+	if len(link) > 0 {
+
+		link = "https://data.library.bz/dbdumps/" + link
+		headers, err := downloader.GetHeaders(link)
+		if err == nil {
+			size = headers.Size
+		}
+	}
+	return link, size
+}
+
 func Start() bool {
 
 	if !utils.Exists(downloadedSignalFile) {
-		lastDownload := GetLastDowloadedDump()
+		link, size := GetDumpToDownload()
+		if size > 0 {
 
-		link := ""
-		dumps := GetLibgenDumps()
-
-		if len(lastDownload) > 0 {
-			for _, dump := range dumps {
-				if strings.Contains(lastDownload, dump) {
-					link = dump
-					if !strings.HasSuffix(link, ".rar") {
-						link = utils.RemoveExt(link)
-					}
-					break
-				}
-			}
-		}
-		if len(link) == 0 {
-			utils.DeleteAllFiles(GetAssetDir())
-			sort.Slice(dumps, func(i, j int) bool {
-				return dumps[i] > dumps[j]
-			})
-			rgx := regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
-			for _, dump := range dumps {
-				if rgx.MatchString(dump) {
-					link = dump
-					break
-				}
-			}
-		}
-		if len(link) > 0 {
-
-			link = "https://data.library.bz/dbdumps/" + link
 			filename := ""
 			slashIdx := strings.LastIndex(link, "/")
 			filename = link[slashIdx+1:]
