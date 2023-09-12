@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -141,9 +142,10 @@ func GetDumpToDownload() (string, int64) {
 }
 
 func DownloadPart(destFile, link string, index int, start, size int64) error {
+
 	tempFile := filepath.Join(filepath.Dir(destFile), utils.RemoveExt(filepath.Base(destFile))+fmt.Sprintf("-part-%d.tmp", index+1))
 	targetFile := utils.RemoveExt(tempFile) + filepath.Ext(destFile)
-
+	defer os.Remove(tempFile)
 	if utils.Exists(targetFile) {
 
 		if utils.GetFileSize(targetFile) == size {
@@ -197,6 +199,14 @@ func DownloadPart(destFile, link string, index int, start, size int64) error {
 	}
 	return err
 }
+
+var mapLck = sync.Mutex{}
+
+func DeletePartMapKey(parts map[int]Part, key int) {
+	mapLck.Lock()
+	defer mapLck.Unlock()
+	delete(parts, key)
+}
 func Start() bool {
 
 	if !utils.Exists(downloadedSignalFile) {
@@ -210,45 +220,77 @@ func Start() bool {
 
 			parts := SplitFileParts(size, partSize)
 
+			downloaded := int64(0)
+
+			var asset = GetAssetDir()
+			dlrgx := regexp.MustCompile(`(-part-\d+.rar)$`)
+			digitRgx := regexp.MustCompile(`\D+`)
+
+			for _, inf := range utils.GetInfosFromDir(asset) {
+				if !inf.Info.IsDir() && dlrgx.MatchString(inf.FullPath) {
+					downloaded += inf.Info.Size()
+					idxStr := dlrgx.FindString(inf.FullPath)
+					idxStr = digitRgx.ReplaceAllString(idxStr, "")
+					if num, err := strconv.ParseInt(idxStr, 10, 32); err == nil {
+						delete(parts, int(num))
+					}
+
+				}
+			}
 			// {
 			// 	err := DownloadPart(destFile, link, 265, 2048*10, 1024*1024*5)
 			// 	fmt.Println(err)
 			// }
-
+			wg := sync.WaitGroup{}
 			for len(parts) > 0 {
+
+				keys := make([]int, 0, len(parts))
+
+				for k := range parts {
+					keys = append(keys, k)
+				}
+				sort.Ints(keys)
+
 				total := len(parts)
 				fmt.Printf("Downloading %d parts\n", total)
-				wg := sync.WaitGroup{}
+
 				downloading := 0
-				counter := 0
-				for idx, p := range parts {
+				start := time.Now()
+				for _, idx := range keys {
+					// if slices.Contains(downloadedIndexes, idx+1) {
+					// 	continue
+					// }
 					wg.Add(1)
+					p := parts[idx]
 					downloading++
 					go func(index int, part Part) {
 						defer func() {
 							downloading--
+
 							wg.Done()
 
 						}()
 						err := DownloadPart(destFile, link, index, part.Start, part.Size)
 						if err == nil {
-							delete(parts, index)
+							DeletePartMapKey(parts, index)
+							downloaded += part.Size
 						}
 
 					}(idx, p)
-					if (counter+1)%5 == 0 {
-						progress := int((counter * 100) / total)
-						fmt.Printf("At position %d/%d %d%%\n", counter+1, total, progress)
+					if time.Since(start) > (time.Second*5) && downloaded > 0 {
+						progress := float64((downloaded * 100) / size)
+						fmt.Printf("Downloaded %s/%s :progress %.2f%%\n", utils.FormatBytes(downloaded), utils.FormatBytes(size), progress)
+						start = time.Now()
 					}
 					for downloading > 4 {
 						time.Sleep(time.Second * 2)
 					}
 
-					counter++
 				}
 				wg.Wait()
 				time.Sleep(time.Second * 2)
 			}
+			wg.Wait()
 			return true
 
 		}
@@ -288,6 +330,7 @@ func main() {
 			time.Sleep(time.Second * 10)
 		}
 	} else {
+		fmt.Println("Another instance is running")
 		time.Sleep(time.Second * 10)
 	}
 }

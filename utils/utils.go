@@ -123,6 +123,7 @@ func MoveOrCopyFile(src, dest string) error {
 
 	return err
 }
+
 func GetFileSize(src string) int64 {
 	size := int64(0)
 	stat, err := os.Stat(src)
