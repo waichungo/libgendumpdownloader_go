@@ -25,11 +25,12 @@ type Part struct {
 }
 
 func GetAssetDir() string {
-	dir := filepath.Join(utils.GetBaseDirectory(), "asset")
-	if !utils.Exists(dir) {
-		os.MkdirAll(dir, 0655)
-	}
-	return dir
+	return `H:\libgendb\asset`
+	// dir := filepath.Join(utils.GetBaseDirectory(), "asset")
+	// if !utils.Exists(dir) {
+	// 	os.MkdirAll(dir, 0655)
+	// }
+	// return dir
 }
 func GetLibgenDumps() []string {
 	dumps := make([]string, 0, 20)
@@ -177,7 +178,7 @@ func DownloadPart(destFile, link string, index int, start, size int64) error {
 				if err == io.EOF {
 					err = nil
 					file.Close()
-					if utils.GetFileSize(targetFile) != size {
+					if utils.GetFileSize(tempFile) != size {
 						err = errors.New("file size does not match")
 					}
 					break
@@ -207,6 +208,98 @@ func DeletePartMapKey(parts map[int]Part, key int) {
 	defer mapLck.Unlock()
 	delete(parts, key)
 }
+func CleanParts(filename string) bool {
+	dlrgx := regexp.MustCompile(`(-part-\d+.rar)$`)
+	res := true
+	for _, part := range utils.GetInfosFromDir(GetAssetDir()) {
+		if dlrgx.MatchString(part.FullPath) {
+			err := os.Remove(part.FullPath)
+			res = res && err == nil
+			if !res {
+				break
+			}
+		}
+	}
+	return res
+}
+func MergeParts(filename string) error {
+	rgx := regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
+	prefix := rgx.FindString(filename)
+
+	file, err := os.OpenFile(filename, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0755)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	dlrgx := regexp.MustCompile(`(-part-\d+.rar)$`)
+	digitRgx := regexp.MustCompile(`\D+`)
+
+	parts := map[int]string{}
+	size := int64(0)
+	mergedBytes := int64(0)
+
+	for _, part := range utils.GetInfosFromDir(GetAssetDir()) {
+		if strings.HasPrefix(filepath.Base(part.FullPath), prefix) && dlrgx.MatchString(part.FullPath) {
+
+			idxStr := dlrgx.FindString(part.FullPath)
+			idxStr = digitRgx.ReplaceAllString(idxStr, "")
+			if num, err := strconv.ParseInt(idxStr, 10, 32); err == nil {
+				k := int(num)
+				parts[k] = part.FullPath
+				size += part.Info.Size()
+			}
+
+		}
+	}
+
+	keys := make([]int, 0, len(parts))
+
+	for k := range parts {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+
+	total := len(parts)
+	counter := 0
+	if total > 0 {
+		counter++
+		fmt.Println("Merging files")
+		for _, key := range keys {
+			input, err := os.OpenFile(parts[key], os.O_RDONLY, 0755)
+			if err != nil {
+				return err
+			}
+			defer input.Close()
+			ln, err := io.Copy(file, input)
+
+			if err != nil {
+				return err
+			}
+			input.Close()
+			mergedBytes += ln
+			progress := (float64(counter) * 100) / float64(total)
+			fmt.Printf("Merged (%s/%s) :Progress %.2f%%\n", utils.FormatBytes(mergedBytes), utils.FormatBytes(size), progress)
+
+		}
+	}
+	if mergedBytes != size {
+		return errors.New("file sizes do not match")
+	}
+	return nil
+}
+func VerifyCompletion(filename string, total int64) bool {
+	rgx := regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
+	prefix := rgx.FindString(filename)
+	downloaded := int64(0)
+	for _, part := range utils.GetInfosFromDir(GetAssetDir()) {
+		if strings.HasPrefix(filepath.Base(part.FullPath), prefix) && strings.HasSuffix(strings.ToLower(part.FullPath), ".rar") {
+			downloaded += part.Info.Size()
+		}
+	}
+
+	return downloaded == total
+}
 func Start() bool {
 
 	if !utils.Exists(downloadedSignalFile) {
@@ -232,7 +325,8 @@ func Start() bool {
 					idxStr := dlrgx.FindString(inf.FullPath)
 					idxStr = digitRgx.ReplaceAllString(idxStr, "")
 					if num, err := strconv.ParseInt(idxStr, 10, 32); err == nil {
-						delete(parts, int(num)-1)
+						k := int(num) - 1
+						delete(parts, k)
 					}
 
 				}
@@ -291,7 +385,12 @@ func Start() bool {
 				time.Sleep(time.Second * 2)
 			}
 			wg.Wait()
-			return true
+			if VerifyCompletion(destFile, size) {
+				err := MergeParts(destFile)
+				if err == nil {
+
+				}
+			}
 
 		}
 
@@ -314,7 +413,7 @@ func SplitFileParts(totalSize int64, partSize int) map[int]Part {
 		} else {
 			res[index] = Part{
 				Start: int64(startIdx),
-				Size:  int64(partSize),
+				Size:  int64(rem),
 			}
 			startIdx += rem
 			rem -= rem
@@ -329,6 +428,7 @@ func main() {
 		for !Start() {
 			time.Sleep(time.Second * 10)
 		}
+
 	} else {
 		fmt.Println("Another instance is running")
 		time.Sleep(time.Second * 10)
