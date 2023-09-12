@@ -1,2 +1,2 @@
-GET https://data.library.bz/dbdumps/libgen_2023-09-11.rar
-range: bytes=0-2047
+HEAD http://www.google.com
+# range: bytes=0-2047

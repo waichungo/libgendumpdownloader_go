@@ -20,18 +20,20 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
+var LibGenFullRgx = `libgen_\d{4,}-\d{2,}-\d{2,}`
+
 type Part struct {
 	Start int64
 	Size  int64
 }
 
 func GetAssetDir() string {
-	return `H:\libgendb\asset`
-	// dir := filepath.Join(utils.GetBaseDirectory(), "asset")
-	// if !utils.Exists(dir) {
-	// 	os.MkdirAll(dir, 0655)
-	// }
-	// return dir
+	// return `H:\libgendb\asset`
+	dir := filepath.Join(utils.GetBaseDirectory(), "asset")
+	if !utils.Exists(dir) {
+		os.MkdirAll(dir, 0655)
+	}
+	return dir
 }
 func GetLibgenDumps() []string {
 	dumps := make([]string, 0, 20)
@@ -88,7 +90,7 @@ func GetLastDowloadedDump() string {
 		sort.Slice(paths, func(i, j int) bool {
 			return paths[i] > paths[j]
 		})
-		rgx = regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
+		rgx = regexp.MustCompile(LibGenFullRgx)
 		for _, dl := range paths {
 			if rgx.MatchString(dl) {
 				downloaded = dl
@@ -124,7 +126,7 @@ func GetDumpToDownload() (string, int64) {
 		sort.Slice(dumps, func(i, j int) bool {
 			return dumps[i] > dumps[j]
 		})
-		rgx := regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
+		rgx := regexp.MustCompile(LibGenFullRgx)
 		for _, dump := range dumps {
 			if rgx.MatchString(dump) {
 				link = dump
@@ -263,6 +265,7 @@ func VerifyPartsFromNetwork(link, filename string, totalSize, partSize int64) bo
 	netDownloading := 0
 	for key, _part := range splitParts {
 		netDownloading++
+		netWg.Add(1)
 		go func(part Part, idx int) {
 			defer func() {
 				netDownloading--
@@ -303,7 +306,7 @@ func VerifyPartsFromNetwork(link, filename string, totalSize, partSize int64) bo
 
 				partFile, err := os.OpenFile(part, os.O_RDONLY, 0755)
 				if err != nil {
-					return false
+					continue
 				}
 				defer partFile.Close()
 
@@ -316,20 +319,19 @@ func VerifyPartsFromNetwork(link, filename string, totalSize, partSize int64) bo
 
 				if !bytes.EqualFold(partBuffer, netPartBuffer) {
 					equal = false
+					partFile.Close()
+					os.Remove(part)
 				} else {
 					equal = equal && true
 				}
-				partFile.Close()
-				if !equal {
-					return false
-				}
+
 			}
 		}
 	} else {
 		return false
 	}
 
-	return err == nil
+	return err == nil && equal
 }
 func VerifyBytes(filename string) bool {
 	dlrgx := regexp.MustCompile(`(-part-\d+.rar)$`)
@@ -477,7 +479,7 @@ func MergeParts(filename string) error {
 }
 func GetSortedParts(filename string) ([]string, error) {
 	result := make([]string, 0, 10)
-	rgx := regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
+	rgx := regexp.MustCompile(LibGenFullRgx)
 	prefix := rgx.FindString(filename)
 
 	dlrgx := regexp.MustCompile(`(-part-\d+.rar)$`)
@@ -527,7 +529,7 @@ func GetSortedParts(filename string) ([]string, error) {
 	return result, nil
 }
 func VerifyCompletion(filename string, total int64) bool {
-	rgx := regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
+	rgx := regexp.MustCompile(LibGenFullRgx)
 	dlrgx := regexp.MustCompile(`(-part-\d+.rar)$`)
 	prefix := rgx.FindString(filename)
 	downloaded := int64(0)
