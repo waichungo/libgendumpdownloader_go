@@ -208,7 +208,7 @@ func DeletePartMapKey(parts map[int]Part, key int) {
 	defer mapLck.Unlock()
 	delete(parts, key)
 }
-func CleanParts(filename string) bool {
+func CleanDownloadedParts() bool {
 	dlrgx := regexp.MustCompile(`(-part-\d+.rar)$`)
 	res := true
 	for _, part := range utils.GetInfosFromDir(GetAssetDir()) {
@@ -302,99 +302,97 @@ func VerifyCompletion(filename string, total int64) bool {
 }
 func Start() bool {
 
-	if !utils.Exists(downloadedSignalFile) {
-		link, size := GetDumpToDownload()
-		if size > 0 {
-			const partSize = 1024 * 1024 * 20
-			filename := ""
-			slashIdx := strings.LastIndex(link, "/")
-			filename = link[slashIdx+1:]
-			destFile := filepath.Join(GetAssetDir(), filename)
+	link, size := GetDumpToDownload()
+	if size > 0 {
+		const partSize = 1024 * 1024 * 20
+		filename := ""
+		slashIdx := strings.LastIndex(link, "/")
+		filename = link[slashIdx+1:]
+		destFile := filepath.Join(GetAssetDir(), filename)
 
-			parts := SplitFileParts(size, partSize)
+		parts := SplitFileParts(size, partSize)
 
-			downloaded := int64(0)
+		downloaded := int64(0)
 
-			var asset = GetAssetDir()
-			dlrgx := regexp.MustCompile(`(-part-\d+.rar)$`)
-			digitRgx := regexp.MustCompile(`\D+`)
+		var asset = GetAssetDir()
+		dlrgx := regexp.MustCompile(`(-part-\d+.rar)$`)
+		digitRgx := regexp.MustCompile(`\D+`)
 
-			for _, inf := range utils.GetInfosFromDir(asset) {
-				if !inf.Info.IsDir() && dlrgx.MatchString(inf.FullPath) {
-					downloaded += inf.Info.Size()
-					idxStr := dlrgx.FindString(inf.FullPath)
-					idxStr = digitRgx.ReplaceAllString(idxStr, "")
-					if num, err := strconv.ParseInt(idxStr, 10, 32); err == nil {
-						k := int(num) - 1
-						delete(parts, k)
-					}
-
+		for _, inf := range utils.GetInfosFromDir(asset) {
+			if !inf.Info.IsDir() && dlrgx.MatchString(inf.FullPath) {
+				downloaded += inf.Info.Size()
+				idxStr := dlrgx.FindString(inf.FullPath)
+				idxStr = digitRgx.ReplaceAllString(idxStr, "")
+				if num, err := strconv.ParseInt(idxStr, 10, 32); err == nil {
+					k := int(num) - 1
+					delete(parts, k)
 				}
+
 			}
-			// {
-			// 	err := DownloadPart(destFile, link, 265, 2048*10, 1024*1024*5)
-			// 	fmt.Println(err)
-			// }
-			wg := sync.WaitGroup{}
-			for len(parts) > 0 {
+		}
+		// {
+		// 	err := DownloadPart(destFile, link, 265, 2048*10, 1024*1024*5)
+		// 	fmt.Println(err)
+		// }
+		wg := sync.WaitGroup{}
+		for len(parts) > 0 {
 
-				keys := make([]int, 0, len(parts))
+			keys := make([]int, 0, len(parts))
 
-				for k := range parts {
-					keys = append(keys, k)
-				}
-				sort.Ints(keys)
+			for k := range parts {
+				keys = append(keys, k)
+			}
+			sort.Ints(keys)
 
-				total := len(parts)
-				fmt.Printf("Downloading %d parts\n", total)
+			total := len(parts)
+			fmt.Printf("Downloading %d parts\n", total)
 
-				downloading := 0
-				start := time.Now()
-				for _, idx := range keys {
-					// if slices.Contains(downloadedIndexes, idx+1) {
-					// 	continue
-					// }
-					wg.Add(1)
-					p := parts[idx]
-					downloading++
-					go func(index int, part Part) {
-						defer func() {
-							downloading--
+			downloading := 0
+			start := time.Now()
+			for _, idx := range keys {
+				// if slices.Contains(downloadedIndexes, idx+1) {
+				// 	continue
+				// }
+				wg.Add(1)
+				p := parts[idx]
+				downloading++
+				go func(index int, part Part) {
+					defer func() {
+						downloading--
 
-							wg.Done()
+						wg.Done()
 
-						}()
-						err := DownloadPart(destFile, link, index, part.Start, part.Size)
-						if err == nil {
-							DeletePartMapKey(parts, index)
-							downloaded += part.Size
-						}
-
-					}(idx, p)
-					if time.Since(start) > (time.Second*5) && downloaded > 0 {
-						progress := float64((downloaded * 100) / size)
-						fmt.Printf("Downloaded %s/%s :progress %.2f%%\n", utils.FormatBytes(downloaded), utils.FormatBytes(size), progress)
-						start = time.Now()
-					}
-					for downloading > 4 {
-						time.Sleep(time.Second * 2)
+					}()
+					err := DownloadPart(destFile, link, index, part.Start, part.Size)
+					if err == nil {
+						DeletePartMapKey(parts, index)
+						downloaded += part.Size
 					}
 
+				}(idx, p)
+				if time.Since(start) > (time.Second*5) && downloaded > 0 {
+					progress := float64((downloaded * 100) / size)
+					fmt.Printf("Downloaded %s/%s :progress %.2f%%\n", utils.FormatBytes(downloaded), utils.FormatBytes(size), progress)
+					start = time.Now()
 				}
-				wg.Wait()
-				time.Sleep(time.Second * 2)
+				for downloading > 4 {
+					time.Sleep(time.Second * 2)
+				}
+
 			}
 			wg.Wait()
-			if VerifyCompletion(destFile, size) {
-				err := MergeParts(destFile)
-				if err == nil {
-
-				}
+			time.Sleep(time.Second * 2)
+		}
+		wg.Wait()
+		if VerifyCompletion(destFile, size) {
+			err := MergeParts(destFile)
+			if err == nil {
+				return CleanDownloadedParts()
 			}
-
 		}
 
 	}
+
 	return false
 }
 func SplitFileParts(totalSize int64, partSize int) map[int]Part {
@@ -424,9 +422,14 @@ func SplitFileParts(totalSize int64, partSize int) map[int]Part {
 	return res
 }
 func main() {
-	if utils.FirstInstance() {
-		for !Start() {
+	if utils.FirstInstance() && !utils.Exists(downloadedSignalFile) {
+		completed := Start()
+		for !completed {
 			time.Sleep(time.Second * 10)
+			completed = Start()
+		}
+		if completed {
+			utils.WriteFile(downloadedSignalFile, []byte(""))
 		}
 
 	} else {
