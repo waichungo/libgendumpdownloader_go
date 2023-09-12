@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -200,6 +201,37 @@ func DownloadPart(destFile, link string, index int, start, size int64) error {
 	}
 	return err
 }
+func GetPart(link string, start, size int64) []byte {
+
+	for trys := 0; trys < 5; trys++ {
+		res, err := utils.GetResponse(link, &map[string]string{
+			"Range": fmt.Sprintf("bytes=%d-%d", start, (start+size)-1),
+		})
+		if err == nil {
+			if res.ContentLength != size {
+				return nil
+			}
+			defer res.Body.Close()
+			bytesBuffer := make([]byte, 0, 1024)
+			writer := bytes.NewBuffer(bytesBuffer)
+
+			if err != nil {
+				return nil
+			}
+
+			ln, err := io.CopyN(writer, res.Body, size)
+
+			if err == nil || ln == size {
+				return writer.Bytes()
+
+			}
+
+		}
+		time.Sleep(time.Second)
+		utils.WaitForConnection()
+	}
+	return nil
+}
 
 var mapLck = sync.Mutex{}
 
@@ -222,22 +254,237 @@ func CleanDownloadedParts() bool {
 	}
 	return res
 }
-func MergeParts(filename string) error {
-	rgx := regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
-	prefix := rgx.FindString(filename)
+func VerifyPartsFromNetwork(link, filename string, totalSize, partSize int64) bool {
 
+	splitParts := SplitFileParts(totalSize, int(partSize))
+	networkBufferMap := map[int][]byte{}
+	netWg := sync.WaitGroup{}
+
+	netDownloading := 0
+	for key, _part := range splitParts {
+		netDownloading++
+		go func(part Part, idx int) {
+			defer func() {
+				netDownloading--
+				netWg.Done()
+
+			}()
+			partBufferSize := 1024
+			if partBufferSize > int(partSize) {
+				partBufferSize = int(partSize)
+			}
+			buff := GetPart(link, part.Start, int64(partBufferSize))
+			networkBufferMap[idx] = buff
+
+		}(_part, key)
+		for netDownloading > 5 {
+			time.Sleep(time.Second)
+		}
+
+	}
+	netWg.Wait()
+
+	dlrgx := regexp.MustCompile(`(-part-\d+.rar)$`)
+	digitRgx := regexp.MustCompile(`\D+`)
+	// equal := true
+
+	parts, err := GetSortedParts(filename)
+
+	equal := true
+	if err == nil {
+		for _, part := range parts {
+
+			idxStr := dlrgx.FindString(part)
+			idxStr = digitRgx.ReplaceAllString(idxStr, "")
+			if num, err := strconv.ParseInt(idxStr, 10, 32); err == nil {
+				key := int(num) - 1
+
+				netPartBuffer := networkBufferMap[key]
+
+				partFile, err := os.OpenFile(part, os.O_RDONLY, 0755)
+				if err != nil {
+					return false
+				}
+				defer partFile.Close()
+
+				partBuffer := make([]byte, len(netPartBuffer))
+
+				n, err := io.ReadFull(partFile, partBuffer)
+				if err != nil || n != len(partBuffer) {
+					return false
+				}
+
+				if !bytes.EqualFold(partBuffer, netPartBuffer) {
+					equal = false
+				} else {
+					equal = equal && true
+				}
+				partFile.Close()
+				if !equal {
+					return false
+				}
+			}
+		}
+	} else {
+		return false
+	}
+
+	return err == nil
+}
+func VerifyBytes(filename string) bool {
+	dlrgx := regexp.MustCompile(`(-part-\d+.rar)$`)
+	digitRgx := regexp.MustCompile(`\D+`)
+	// equal := true
+
+	destFile, err := os.OpenFile(filename, os.O_RDWR, 0755)
+	destSize := utils.GetFileSize(filename)
+	if err == nil {
+		defer destFile.Close()
+		parts, err := GetSortedParts(filename)
+		if err == nil {
+			for _, part := range parts {
+
+				idxStr := dlrgx.FindString(part)
+				idxStr = digitRgx.ReplaceAllString(idxStr, "")
+				if num, err := strconv.ParseInt(idxStr, 10, 32); err == nil {
+					key := int(num) - 1
+
+					partSize := utils.GetFileSize(part)
+					partFile, err := os.OpenFile(part, os.O_RDONLY, 0755)
+					if err != nil {
+						return false
+					}
+					defer partFile.Close()
+					destPos := partSize * int64(key)
+					if destPos > destSize {
+						return false
+					}
+					bufferSize := 1024
+					if (destSize - destPos) < int64(bufferSize) {
+						bufferSize = int(destSize - destPos)
+					}
+
+					destBuffer := make([]byte, bufferSize)
+					partBuffer := make([]byte, bufferSize)
+					destFile.Seek(destPos, 0)
+
+					n, err := io.ReadFull(destFile, destBuffer)
+					if err != nil || n != len(destBuffer) {
+						return false
+					}
+					n, err = io.ReadFull(partFile, partBuffer)
+					if err != nil || n != len(destBuffer) {
+						return false
+					}
+					equal := false
+					if !bytes.EqualFold(partBuffer, destBuffer) {
+
+						destFile.Seek(destPos, 0)
+						partFile.Seek(0, 0)
+
+						ln, _ := io.Copy(destFile, partFile)
+						if ln == partSize {
+							partFile.Seek(0, 0)
+							destFile.Seek(destPos, 0)
+
+							n, err = io.ReadFull(destFile, destBuffer)
+							if err != nil || n != len(destBuffer) {
+								return false
+							}
+							n, err = io.ReadFull(partFile, partBuffer)
+							if err != nil || n != len(destBuffer) {
+								return false
+							}
+
+							if bytes.EqualFold(partBuffer, destBuffer) {
+								equal = true
+							}
+
+						}
+
+					} else {
+						equal = true
+					}
+					partFile.Close()
+					if !equal {
+						return false
+					}
+				}
+			}
+		} else {
+			return false
+		}
+	}
+
+	return err == nil
+}
+func MergeParts(filename string) error {
+	parts, err := GetSortedParts(filename)
+	if err != nil {
+		return err
+	}
+	size := int64(0)
+	for _, part := range parts {
+		size += utils.GetFileSize(part)
+	}
+
+	if utils.Exists(filename) {
+		if utils.GetFileSize(filename) == size {
+			if VerifyBytes(filename) {
+				return nil
+			}
+		}
+		os.Remove(filename)
+	}
 	file, err := os.OpenFile(filename, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0755)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
+	mergedBytes := int64(0)
+
+	total := len(parts)
+	counter := 0
+	if total > 0 {
+		fmt.Println("Merging files")
+		for _, filePart := range parts {
+			counter++
+			input, err := os.OpenFile(filePart, os.O_RDONLY, 0755)
+			if err != nil {
+				return err
+			}
+			defer input.Close()
+			ln, err := io.Copy(file, input)
+
+			if err != nil {
+				return err
+			}
+			input.Close()
+			mergedBytes += ln
+			progress := (float64(counter) * 100) / float64(total)
+			fmt.Printf("Merged (%s/%s) :Progress %.2f%%\n", utils.FormatBytes(mergedBytes), utils.FormatBytes(size), progress)
+
+		}
+	}
+	if mergedBytes != size {
+		return errors.New("file sizes do not match")
+	}
+	if !VerifyBytes(filename) {
+		return errors.New("bytes do not match")
+	}
+	return nil
+}
+func GetSortedParts(filename string) ([]string, error) {
+	result := make([]string, 0, 10)
+	rgx := regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
+	prefix := rgx.FindString(filename)
+
 	dlrgx := regexp.MustCompile(`(-part-\d+.rar)$`)
 	digitRgx := regexp.MustCompile(`\D+`)
 
 	parts := map[int]string{}
 	size := int64(0)
-	mergedBytes := int64(0)
 
 	for _, part := range utils.GetInfosFromDir(GetAssetDir()) {
 		if strings.HasPrefix(filepath.Base(part.FullPath), prefix) && dlrgx.MatchString(part.FullPath) {
@@ -259,41 +506,33 @@ func MergeParts(filename string) error {
 		keys = append(keys, k)
 	}
 	sort.Ints(keys)
-
-	total := len(parts)
-	counter := 0
-	if total > 0 {
-		counter++
-		fmt.Println("Merging files")
-		for _, key := range keys {
-			input, err := os.OpenFile(parts[key], os.O_RDONLY, 0755)
-			if err != nil {
-				return err
+	for idx, k := range keys {
+		next := k + 1
+		prev := k - 1
+		if k > 1 {
+			if keys[idx-1] != prev {
+				return result, errors.New("file part missing")
 			}
-			defer input.Close()
-			ln, err := io.Copy(file, input)
-
-			if err != nil {
-				return err
+		}
+		if k < len(keys) {
+			if keys[idx+1] != next {
+				return result, errors.New("file part missing")
 			}
-			input.Close()
-			mergedBytes += ln
-			progress := (float64(counter) * 100) / float64(total)
-			fmt.Printf("Merged (%s/%s) :Progress %.2f%%\n", utils.FormatBytes(mergedBytes), utils.FormatBytes(size), progress)
-
 		}
 	}
-	if mergedBytes != size {
-		return errors.New("file sizes do not match")
+	for _, k := range keys {
+		result = append(result, parts[k])
 	}
-	return nil
+
+	return result, nil
 }
 func VerifyCompletion(filename string, total int64) bool {
 	rgx := regexp.MustCompile(`libgen_\d{4,}-\d{2,}-\d{2,}`)
+	dlrgx := regexp.MustCompile(`(-part-\d+.rar)$`)
 	prefix := rgx.FindString(filename)
 	downloaded := int64(0)
 	for _, part := range utils.GetInfosFromDir(GetAssetDir()) {
-		if strings.HasPrefix(filepath.Base(part.FullPath), prefix) && strings.HasSuffix(strings.ToLower(part.FullPath), ".rar") {
+		if strings.HasPrefix(filepath.Base(part.FullPath), prefix) && dlrgx.MatchString(part.FullPath) {
 			downloaded += part.Info.Size()
 		}
 	}
@@ -384,7 +623,12 @@ func Start() bool {
 			time.Sleep(time.Second * 2)
 		}
 		wg.Wait()
-		if VerifyCompletion(destFile, size) {
+		if !VerifyPartsFromNetwork(link, destFile, size, partSize) {
+			return false
+		}
+		if VerifyBytes(destFile) {
+			return CleanDownloadedParts()
+		} else if VerifyCompletion(destFile, size) {
 			err := MergeParts(destFile)
 			if err == nil {
 				return CleanDownloadedParts()
