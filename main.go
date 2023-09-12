@@ -232,7 +232,7 @@ func Start() bool {
 					idxStr := dlrgx.FindString(inf.FullPath)
 					idxStr = digitRgx.ReplaceAllString(idxStr, "")
 					if num, err := strconv.ParseInt(idxStr, 10, 32); err == nil {
-						delete(parts, int(num))
+						delete(parts, int(num)-1)
 					}
 
 				}
