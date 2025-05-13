@@ -1,2 +1,7 @@
-HEAD http://www.google.com
-# range: bytes=0-2047
+GET https://libgen.li/json.php?object=e&isbn=9780698192157&addkeys=*
+
+####
+GET https://openlibrary.org/search.json?q=Ego%20Is%20the%20Enemy&sort=new
+
+####
+GET https://openlibrary.org/isbn/9780698192157
